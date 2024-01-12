@@ -1,0 +1,517 @@
+#' @title Make Workflow Set Comparison Plot
+#' @description Plots Workflow set comparison
+#' @param .wf_set workflow objects from workflowsets::workflow_set
+#' @param .subtitle character Plot's subtitle. Default to 'No subtitle provided'
+#' @return plot object
+#' @export
+make_wset_comparison_plot <- function(.wf_set, .subtitle = 'No subtitle provided'){
+  plot <- collect_metrics(.wf_set) %>%
+    filter(.metric == "mase") %>%
+    # group_by(wflow_id) %>%
+    # filter(mean == max(mean)) %>%
+    # group_by(model) %>%
+    # select(-.config) %>%
+    # distinct() %>%
+    # ungroup() %>%
+    arrange(., (mean))
+    mutate(Workflow_Rank =  row_number(-mean),
+           .metric = str_to_upper(.metric)) %>%
+    ggplot(aes(x=Workflow_Rank, y = mean, shape = Recipe, color = Model_Type)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = mean-std_err, ymax = mean+std_err)) +
+    theme_minimal()+
+    scale_colour_viridis_d() +
+    labs(title = glue::glue("Performance Comparison of Workflow Sets: {.subtitle}"),
+         # subtitle = .subtitle,
+         x = "Workflow Rank",
+         y = "Accuracy",
+         color = "Model Types",
+         shape = "Recipes") +
+    theme(legend.position="bottom")
+
+  plotly::ggplotly(plot, width = 1200, height = 1000)
+
+}
+
+#' @title Make Revenue Performance Plot
+#' @description Make four plot for analysis of the revenue by the number of
+#' entries number by hour and day; and also hourly and monthly aggregattions.
+#' This plot is supposed to help gain insight about the time series
+#' @param df a data frame, usually type1_prediction_basis
+#' @param .data_intervals data frame
+#' @return plot object
+#' @export
+make_revenue_performance_plot <- function(df, .data_intervals){
+
+  # revenue by the number of entries per day
+  df <- df %>%
+    group_by(TIME_date) %>%
+    mutate(COUNTS_daily = n()) %>%
+    mutate(REV_date_purchase = sum(POS_hourly_sell_brut, na.rm = T) / n()) %>%
+    filter(timestamp < .data_intervals$training_end)
+
+  plot_rev_hour <- df %>%
+    ggplot(aes(x = TIME_date, y = scale(REV_hourly_performace))) +
+    geom_bar(stat = "identity") +
+    #theme_ipsum_rc(grid="X") +
+    theme(legend.position = "none")+
+    labs(title = "Revenue by the number of entries per day",
+         y = "Revenue (CHF)",
+         x = "Time") +
+    theme(plot.title = element_text(size=10),
+          axis.title.y = element_text(size=7),
+          axis.title.x = element_text(size=7))
+
+  # counts per day
+  plot_counts <- df %>%
+    ggplot(aes(x = TIME_date, y =scale(COUNTS_daily))) +
+    geom_bar(stat = "identity") +
+    #theme_ipsum_rc(grid="X") +
+    theme(legend.position = "none")+
+    labs(title = "Number of Entries per Day",
+         y = "Counts Compared to the Mean",
+         x= "Time")+
+    theme(plot.title = element_text(size=10),
+          axis.title.y = element_text(size=7),
+          axis.title.x = element_text(size=7))
+
+  # monthly density plots
+  plot_density <- df %>%
+    ggplot(aes(x = REV_date_purchase, y = fct_rev(TIME_month), fill = after_stat(x))) +
+    geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+    scale_fill_viridis(option = "C") +
+    labs(title = 'Revenue by n. of entries',
+         x ="Normalised Revenue (CHF)",
+         y = "Month") +
+    #theme_ipsum_rc(grid="X") +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    )+
+    theme(plot.title = element_text(size=10),
+          axis.title.y = element_text(size=7),
+          axis.title.x = element_text(size=7))
+
+  hagg <- df %>% select(timestamp, REV_hourly_performace) %>%
+    mutate(hour =  lubridate::hour(timestamp)) %>%
+    group_by(hour) %>%
+    summarise(
+      REV_hourly_performace = sum(REV_hourly_performace, na.rm = T)  )
+
+  plot_hours <- hagg %>% pivot_longer(-hour) %>%
+    ggplot(aes(x=hour, y = value, color=name)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    #theme_ipsum_rc(grid="X") +
+    theme(legend.position = "none")+
+    labs(title = "Revenue by the number of entries per hour",
+         y = "Revenue (CHF)",
+         x = "Hour") +
+    theme(plot.title = element_text(size=10),
+          axis.title.y = element_text(size=7),
+          axis.title.x = element_text(size=7))
+
+  p <- cowplot::plot_grid(plot_rev_hour, plot_counts, plot_hours, plot_density, nrow = 2)
+  p
+}
+
+#' @title Plot Time Series Forecasts
+#' @description Creates a plot with past data and forecasts from both prophet and
+#' best fitted model demonstrating confidence intervals as well
+#' @param .typex_prediction_basis type1 or 2 predictn basis data frame
+#' @param .dayagg data frame with same name
+#' @param .full boolean TRUE for all time series and FALSE for just prediction area. Default to TRUE.
+#' @return plot object
+#' @export
+plot_time_series_forecasts <- function(
+    .typex_prediction_basis,
+    .dayagg = dayagg,
+    .full = TRUE
+){
+
+  past_data <- .typex_prediction_basis %>%
+    filter(TIME_date < min(.dayagg$day)) %>%
+    select(TIME_date, POS_daily_sell_brut) %>%
+    mutate( `Future Forecasts` = NA) %>%
+    mutate( `Forecasted Values` = NA) %>%
+    rename( `Real Values` = POS_daily_sell_brut) %>%
+    rename(day = TIME_date)
+
+  dayagg_future <- .dayagg %>%
+    mutate(TIME_date = day) %>%
+    mutate(`Future Forecasts` = ifelse(day > Sys.Date(), PRED, NA)) %>%
+    mutate(PRED = ifelse(day > Sys.Date(), NA,PRED_detailed_daily)) %>%
+    rename(`Real Values` = POS_daily_sell_brut, `Forecasted Values` = PRED) %>%
+    mutate(`Real Values` = ifelse(`Real Values` == 0, NA, `Real Values`)) %>%
+    select(day, "Real Values", "Future Forecasts", "Forecasted Values")
+
+  sd_forecast <- sd(dayagg_future$`Future Forecasts`, na.rm = T)
+  past_future <- rbind(past_data, dayagg_future) %>%
+    pivot_longer(-day) %>%
+    rename(Time = day, Data = name, `Turnover (CHF)` = value) %>%
+    mutate( `Upper bound`= ifelse( Data == "Future Forecasts", `Turnover (CHF)` + sd_forecast, NA),
+            `Upper bound`= ifelse( Time > today() + lubridate::weeks(2), `Turnover (CHF)` + 2*sd_forecast, `Upper bound`),
+            `Lower bound`= ifelse( Data == "Future Forecasts", `Turnover (CHF)` - sd_forecast, NA),
+            `Lower bound`= ifelse( Time > today() + lubridate::weeks(2), `Turnover (CHF)` - 2*sd_forecast, `Lower bound`))
+
+  if (.full == TRUE) {
+
+  plot_past_future <- past_future %>%
+    ggplot(aes(x=Time, y = `Turnover (CHF)`, color=Data, linetype = Data)) +
+    geom_line() +
+    theme_ipsum_rc(grid="X") +
+    scale_linetype_manual(values=c("solid", "dotdash", "solid")) +
+    scale_x_date(date_breaks = "1 month", date_labels =  "%b")+
+    geom_ribbon(aes(ymin = `Lower bound`, ymax = `Upper bound`), alpha = 0.1, col = "gray") +
+    theme(legend.position="bottom")
+
+} else if (.full == FALSE) {
+
+  past_future <- past_future %>%
+    filter(Time >= min(.dayagg$day))
+
+  plot_past_future <- past_future %>%
+    ggplot(aes(x=Time, y = `Turnover (CHF)`, color=Data, linetype = Data)) +
+    geom_line() +
+    theme_ipsum_rc(grid="X") +
+    scale_linetype_manual(values=c("solid", "dotdash", "solid")) +
+    scale_x_date(date_breaks = "1 week", date_labels =  "%d%b")+
+    geom_ribbon(aes(ymin = `Lower bound`, ymax = `Upper bound`), alpha = 0.1, col = "gray")+
+    theme(legend.position="bottom")
+
+} else{
+
+  print("full must be boolean")
+
+}
+return(plot_past_future)
+}
+
+#' @title Plot Feature Importance
+#' @description Plots the Barplot with the Variables that had bigger weights in forecasting.
+#' For now, only works for CUBIST and Random Forest models. New models need to be added manually.
+#' @param .calib_weights workflow with same name
+#' @return plot object
+#' @export
+plot_feature_importance <- function(.calib_weights = calib_weights){
+
+  txt <- as.character(.calib_weights[["fit"]][["fit"]][["fit"]]$output)
+
+  # When the best model is not CUBIST, grepping the txt won't work, so we need to
+  # get other information. For now, this is tested for RF, as only these two have been
+  # working
+  if (length(txt) == 0){
+
+      variable <- .calib_weights$fit$fit$fit$variable.importance %>% names()
+      importance <- .calib_weights$fit$fit$fit$variable.importance %>% as.data.frame() %>% pull(".")
+      # variable created for computing percentual importance
+      total_importance <- importance %>% sum()
+
+      tbl_importance <- tibble(variable, importance) %>%
+        mutate(importance = (importance/total_importance) * 100) %>%
+        mutate(importance = as.integer(importance))
+
+
+  } else{
+    txt_sub_before <- sub(".*Attribute usage:","",txt)
+    txt_sub_after <- sub(".Time: *","",txt_sub_before)
+    txt_split <- unlist(strsplit(txt_sub_after, "\n\t"))
+    tbl_txt_split <- as_tibble(txt_split[3:length(txt_split)])
+
+    tbl_importance <- tbl_txt_split %>%
+      mutate(importance = stringr::str_extract(value, "[^ ]+%")) %>%
+      mutate(variable = stringr::str_extract(value, "[^ ]+$")) %>%
+      mutate(across('importance', str_replace, '%', '')) %>%
+      mutate(importance = as.integer(importance)) %>%
+      filter(variable != "secs\n") %>%
+      select(variable, importance)
+
+  }
+
+    tbl_importance <- tbl_importance %>%
+      # overwrite MET related variables
+      mutate(variable = ifelse(
+        str_detect(variable, "MET_"),
+        str_replace(variable, "MET_", ""),
+        variable)) %>%
+      # overwrite TIME related variables
+      mutate(variable = ifelse(
+        str_detect(variable, "TIME_"),
+        str_replace(variable, "TIME_", ""),
+        variable)) %>%
+      # overwrite REV related variables
+      mutate(variable = ifelse(
+        str_detect(variable, "REV_"),
+        str_replace(variable, "REV_", ""),
+        variable)) %>%
+      # overwrite PRED related variables
+      mutate(variable = ifelse(
+        str_detect(variable, "PRED_"),
+        str_replace(variable, "PRED_", "Forecasted_"),
+        variable)) %>%
+      # overwrite W to Week
+      mutate(variable = ifelse(
+        str_detect(variable, "W"),
+        str_replace(variable, "W", "Week "),
+        variable)) %>%
+      # overwrite num to number
+      mutate(variable = ifelse(
+        str_detect(variable, "num"),
+        str_replace(variable, "num", "number"),
+        variable)) %>%
+      # overwrite HOL related variables
+      mutate(variable = ifelse(
+        str_detect(variable, "HOL_"),
+        "Holiday",
+        variable)) %>%
+      # Change separation to space
+      mutate(variable = str_replace_all(variable, "_", " ")) %>%
+      # Upper case
+      mutate(variable = paste(
+        toupper(substr(variable, 1, 1)),
+        substr(variable, 2, nchar(variable)), sep=""))
+
+    # variable created for computing percentual importance
+    total_importance <- tbl_importance %>% pull(importance) %>% sum()
+
+    tbl_importance <- tbl_importance %>%
+      mutate(importance = (importance/total_importance) * 100) %>%
+      arrange(-importance) %>%
+      slice(1:6)
+
+  plotter <- tbl_importance %>% ggplot(aes(reorder(variable, -importance), importance)) +
+    geom_col() +
+    theme_ipsum_rc(grid="X") +
+    labs(x = "Variable", y = "Importance (%)", title = "Feature Importance")+
+    theme(axis.text.x = element_text(size = 5))
+
+  return(plotter)
+
+}
+
+#' @title Plot Correlation Plot
+#' @description Understand which variables are the most and least correlated to
+#' the prediction variable.
+#' @param use_for_training data frame with all numeric columns to be used in the
+#' training
+#' @param y character of the column name that refers to the prediction variable.
+#' @return plot object
+#' @export
+plot_correlations <- function(use_for_training, y = "POS_hourly_sell_brut"){
+
+  # compute numerics, select what's used in the model
+  df <- use_for_training %>%
+    # filter(OUT_hourly_amt_scores < outlier_threshold) %>%
+    select(-starts_with("DIS_d"),
+               -starts_with('DIS_t'),
+               -starts_with('OUT_')
+             # -timestamp
+    ) %>%
+    mutate(
+      timestamp = as.numeric(timestamp),
+      # POS_hourly_sell_brut = ifelse(POS_hourly_sell_brut > 0, log(POS_hourly_sell_brut), 0),
+      # POS_hourly_sell_brut = ifelse(is.nan(POS_hourly_sell_brut), 0, POS_hourly_sell_brut),
+      across(where(is.character), as.factor),
+      across(where(is.factor), as.numeric),
+      # DIS_week_distanced = ifelse(exists('DIS_week_distanced'), hardhat::importance_weights(DIS_week_distanced), 0)
+    )
+
+  # Index of the variable of interest
+  var_index <- grep(y, names(df))
+
+  # compute correlations
+  correlations <- df %>% cor()
+
+  # convert to data frame
+  cor_df <- data.frame(var = names(df)[-var_index], corr = correlations[var_index, -var_index])
+
+  #plot
+  plt <- ggplot(cor_df, aes(x = reorder(var, corr), y = corr)) +
+    geom_bar(stat = "identity") +
+    labs(title = "Correlation between Y and other variables",
+         x = "Feature",
+         y = "Correlation")+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+  return(plt)
+  #
+}
+
+#' @title Plot Validation Plot
+#' @description 4 graphs are plot : Residuals through time, Scatter-Plot of
+#' Predictions and real values, Wday Erros and Histogram of Residuals
+#' @param dayagg data frame with "day", "POS_daily_sell_brut", "PRED_detailed_daily",
+#' "PRED_stl_ets", "PRED".
+#' @return plot object
+#' @export
+plot_validations <- function(dayagg){
+
+  # Checking for hourly bias
+  df <- dayagg %>%
+    mutate(TIME_wday = lubridate::wday(day, label = TRUE),
+           TIME_month = lubridate::month(day),
+           residuals = PRED - POS_daily_sell_brut)
+
+  # Resideuals through time
+  res <- df %>%
+    filter(POS_daily_sell_brut != 0) %>%
+    ggplot(aes(x = day, y = residuals)) +
+    geom_bar(stat = "identity",  fill = "red", col = "white")+
+    labs(title = 'Residuals through Time',
+         x ="Time",
+         y = "Residuals (CHF/EUR)") +
+    theme_ipsum_rc(grid="X")
+
+  # Monthly Bias
+  month_bias <- df %>%
+    filter(POS_daily_sell_brut != 0) %>%
+    ggplot(aes(y = PRED, x = POS_daily_sell_brut, col = TIME_month)) +
+    labs(title = 'Predictions vs. Real data',
+         x ="Real data",
+         y = "Predictions") +
+    theme_ipsum_rc(grid="X") +
+    geom_point(size = 4, alpha = 0.8) +
+    coord_equal() +
+    geom_abline(intercept = 0, slope = 1, color = "red", linewidth = 2)
+
+  # Error per Wday
+  error_wday <- df %>%
+    group_by(TIME_wday) %>%
+    summarise(residuals = sum(residuals, na.rm = T)) %>%
+    ggplot(aes(x = TIME_wday, y = residuals)) +
+    geom_bar(stat = "identity") +
+    theme_ipsum_rc(grid="X") +
+    labs(title = 'Errors per Week day',
+         x ="Weekday",
+         y = "Errors")
+
+  # Histogram of Residuals
+  res_hist <- df %>%
+    ggplot(aes(x=residuals, fill=residuals)) +
+    geom_density(fill="lightblue")+
+    geom_vline(aes(xintercept=mean(residuals, na.rm = T)), color="black",
+               linetype="dashed")+
+    labs(title="Residuals density curve (Prediction - Actual Data)",x="Residuals", y = "Density")+
+    theme_ipsum_rc(grid="X")
+
+  plt <- cowplot::plot_grid(res, month_bias, error_wday, res_hist, nrow = 2)
+  return(plt)
+}
+
+#' @title Plot Raw Time Series
+#' @description Visualise the Time series hourly, daily and also both Weekday and
+#' Monthly Patterns
+#' @param pos_proc processes POS data
+#' @return plot object
+#' @export
+plot_raw_ts <- function(pos_proc){
+
+   # Hourly TS
+   hourly_ts <- pos_proc %>%
+     ggplot(aes(x = timestamp, y = POS_hourly_sell_brut)) +
+      geom_line(aes(col = "red")) +
+      theme_ipsum_rc(grid="X") +
+      theme(legend.position = "none") +
+      labs(title = "Raw brute sells per hour",
+           x = "Time", y = "Brute sells per hour" )+
+      scale_x_datetime(
+        labels=date_format("%b %y"),
+        expand = expansion(0)
+      )
+
+    # Daily TS
+    daily_ts <- pos_proc %>%
+      group_by(TIME_date) %>%
+      summarise(POS_hourly_sell_brut = sum(POS_hourly_sell_brut)) %>%
+      ggplot(aes(x = TIME_date, y = POS_hourly_sell_brut)) +
+      geom_line(aes(col = "red")) +
+      theme_ipsum_rc(grid="X") +
+      labs(title = "Raw brute sells per day",
+           x = "Time", y = "Brute sells per day" )+
+      theme(legend.position="none")
+
+  # Mean value per wday
+  avr_turnover_wday <- pos_proc %>%
+    group_by(TIME_wday) %>%
+    summarise(POS_daily_sell_brut = mean(POS_daily_sell_brut, na.rm = T)) %>%
+    ggplot(aes(x = POS_daily_sell_brut, y = TIME_wday)) +
+    geom_bar(stat = 'identity') +
+    coord_flip()+
+    theme_ipsum_rc(grid="X") +
+    labs(title = 'Mean Turnover per Weekday',
+         x ="Weekday",
+         y = "Average Turnover (CHF/EUR)")
+
+  # Monthly Patterns
+  monthly_patterns <- pos_proc %>%
+    ggplot(aes(x = POS_hourly_sell_brut, y = fct_rev(TIME_month), fill = after_stat(x))) +
+    geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+    scale_fill_viridis(option = "C") +
+    labs(title = 'Raw Sells per Month of the Year',
+         x ="Revenue (CHF)",
+         y = "Month") +
+    #theme_ipsum_rc(grid="X") +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    )+
+    theme(plot.title = element_text(size=10),
+          axis.title.y = element_text(size=7),
+          axis.title.x = element_text(size=7))
+
+  plt <- cowplot::plot_grid(hourly_ts, daily_ts, monthly_patterns, avr_turnover_wday, nrow = 2)
+  return(plt)
+}
+
+#' @title Plot Reservation and POS data together scaled
+#' @description Visualise the relationship between POS and RES data
+#' @param df tipically type2_prediction_basis
+#' @return plot object
+#' @export
+plot_res_pos <- function(df){
+
+  res_plt <- df %>%
+    group_by(TIME_date) %>%
+    reframe(
+      POS_daily_sell_brut = mean(POS_daily_sell_brut, na.rm = T),
+      RES_total_seats = mean(RES_total_seats, na.rm = T)
+    ) %>%
+    mutate(
+      POS_daily_sell_brut = DStemplating::scale_zero_to_one(POS_daily_sell_brut),
+      RES_total_seats = DStemplating::scale_zero_to_one(RES_total_seats),
+    ) %>%
+    pivot_longer(cols = -TIME_date, names_to = "time_series", values_to = "value") %>%
+    ggplot(aes(x = TIME_date, y = value, col = time_series)) + geom_line()+
+    theme(
+      legend.position="bottom"
+    )+
+    labs(title = 'Reservations x Turnover',
+         x ="Time",
+         y = "Scaled Turnover (0-1)")
+
+  return(res_plt)
+
+}
+
+#' @title Plot Holidays and POS data together scaled
+#' @description Visualise the relationship between POS and HOL data
+#' @param typex_prediction_basis tipically type2_prediction_basis or type1_prediction_basis with
+#' timestamp, POS_hourly_sell_brut and HOL_diffusion cols
+#' @return plot object
+#' @export
+plot_hol_pos <- function(typex_prediction_basis){
+
+  plt <- typex_prediction_basis %>%
+    select(TIME_date, POS_daily_sell_brut, HOL_freedom) %>%
+    # group_by(TIME_date) %>%
+    # summarise_all(sum) %>%
+    mutate(POS_daily_sell_brut = DStemplating::scale_zero_to_one(POS_daily_sell_brut),
+           HOL_freedom = DStemplating::scale_zero_to_one(HOL_freedom)) %>%
+    # select(-POS_hourly_sell_brut) %>%
+    pivot_longer(cols = -TIME_date, names_to = "name", values_to = "value") %>%
+    ggplot(aes(x = TIME_date, y = value, col = name)) + geom_line()
+
+  return(plt)
+}

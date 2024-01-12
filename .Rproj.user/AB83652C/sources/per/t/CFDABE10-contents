@@ -1,0 +1,15 @@
+Package: DStemplating
+Type: Package
+Title: DS Workflow Templating With Parameters and Functions 
+Version: 0.1.0
+Author: Prognolite AG
+Maintainer: Huriel Reichel <huriel.reichel@prognolite.ch>
+Description: Parses configurations and selects and builds up data science workflows.
+License: Copyright Prognolite AG
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 4.2), cli, configr, tidymodels, httr, ggside, ggridges, hrbrthemes, viridis, lubridate, glue, rlist, knitr, doParallel, parallelly, philentropy, glmnet, plotly, data.table, jsonlite, modeltime, mltools, rules, dotenv, cowplot, outliers, finetune, Cubist, lme4, optparse, quarto, here, forecast, fs, janitor, prophet, snakecase, tidyselect, zoo, dplyr, magrittr, purrr, rmarkdown, stringr, tibble, forcats, kernlab, baguette, factoextra
+RoxygenNote: 7.2.3
+Suggests: 
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

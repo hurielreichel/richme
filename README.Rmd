@@ -1,0 +1,192 @@
+---
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
+
+# richme
+
+<!-- badges: start -->
+
+<!-- badges: end -->
+
+The package `richme` is aimed at easing the work of portfolio simulation and simple forecasting making use of yahoo finance open data. It is free of use, and under construction. Feel free to add issues and improve as will.
+
+## Installation
+
+You can install the development version of `richme` like so:
+
+``` r
+devtools::install_github("hurielreichel/richme")
+```
+
+## Getting and Visualising data
+
+`richme` can be used to very easily get yahoo data given a frame of dates, and one or multiple symbols:
+
+```{r get_data}
+library(richme)
+
+dt <- get_yahoo_data(code = "AAPL", start = "2023-10-05")
+dt_m <- get_yahoo_data(code = c("LOGN.SW", "RACE"), start = "2023-10-05")
+```
+
+For the first data frame, we got some data for Apple and then both Logitech and Ferrari. Let's have a look at what we downloaded for Apple stocks:
+
+```{r header}
+dt |> head()
+```
+
+After that, let's have a look at the other one with two different stocks:
+
+```{r header2}
+dt_m |> head()
+```
+
+```{r header3}
+dt_m |> tail()
+```
+
+Once that is done, we can use `richme` for many more things. First of all, let's have a look at the data through a plot using `plot_stock_lines` function:
+
+```{r plot1}
+dt |> plot_stock_lines()
+```
+
+What happens if we have multiple stocks?
+
+```{r plot-multiple}
+dt_m |> plot_stock_lines()
+```
+
+## Computing Gains
+
+A simple, but important topic is to quickly view how much did a certain stock increase or decrease in a given interval. With `richme`, one can make use of `compute_gains` function for that purpose:
+
+```{r gains}
+dt |> compute_gains()
+```
+
+The `percentage_change` computes the change in percentage and the `abs_change` shows the absolute change in the stock value.
+
+The function also works when having more than one symbol:
+
+```{r gains-m}
+dt_m |> compute_gains()
+```
+
+## Portfolio Simulation
+
+### In the past
+
+A trick that is pretty interesting to do is to check how much a portfolio would have valued in a given time in the past. The function `simulate_portfolio_past` will do that for you. Let's say I thought about investing in Ferrari, Apple, and in Logitech from 01.01.2023 to 31.12.2023. Let's do two scenarios, where in one we will invest 1000 in Ferrari, 2000 in Logitech, and 1500 in Logitech.
+
+```{r past-portfolio}
+dt_port <- get_yahoo_data(code = c('RACE', 'AAPL', 'LOGN.SW'))
+inves_df <- tibble(
+  symbol = c(  'RACE', 'AAPL', 'LOGN.SW'), 
+  investment = c(1000,   2000,     1500))
+p1 <- dt_port |> 
+  simulate_portfolio_past(
+    investment_df = inves_df,
+    start = "2023-01-01", 
+    end = "2023-12-31")
+
+return = p1 |> pull(return) |> sum() |> round(2)
+investment = p1 |> pull(investment) |> sum() |> round(2)
+cli::cli_alert_info(paste(return - investment, "of gains with portfolio 1"))
+```
+
+Now let's do the same with 1750 in Ferrari, 750 in Logitech, and 2000 in Logitech:
+
+```{r past-portfolio2}
+inves_df <- tibble(
+  symbol = c(  'RACE', 'AAPL', 'LOGN.SW'), 
+  investment = c(1750,   750,     2000))
+p2 <- dt_port |> 
+  simulate_portfolio_past(
+    investment_df = inves_df,
+    start = "2023-01-01", 
+    end = "2023-12-31")
+
+return = p2 |> pull(return) |> sum() |> round(2)
+investment = p2 |> pull(investment) |> sum() |> round(2)
+cli::cli_alert_info(paste(return - investment, "of gains with portfolio 2"))
+```
+
+Where would we have been more successfull?
+
+### In the future
+
+Looking at the past is not always the best when we are willing to make the choices for the future. The use of a forecasting system is therefore of great interest. For `richme`, so far, we are making use of the `forecast` package and most specifically, the [STLF methodology](https://www.rdocumentation.org/packages/forecast/versions/8.15/topics/forecast.stl). It's a rather simple method that allows the decomposition of a time series in to noise, seasonality and trend. The forecast functions to do the decomposition and the forecasting *per se* are all wrapped into the `forecast_stock` (for a single stock), and `simulate_portfolio_future` (for multiple stocks).
+
+Let's have a look at some usage below:
+
+```{r forecast1}
+forecast_aapl <- dt |> forecast_stock()
+forecast_aapl |> names()
+```
+
+As one can see, the outcome of the function is a list, containing different items. Let's take a closer look:
+
+```{r forecast2}
+forecast_aapl$pred_df |> head()
+```
+
+With the `pred_df`, one has access to the data frame with both real data and forecast for future possible wrangling. It's probably what one would expect if you'd like to explore the results further.
+
+With `gains_forecast` , one will find the outcome of `compute_gains` but then in the future:
+
+```{r gains-future}
+forecast_aapl$gains_forecast
+```
+
+Finally, we go to the fun part: the charts! In this case, all charts that you would have whilst using `forecast` package directly.
+
+```{r}
+forecast_aapl$trend_plot
+```
+
+```{r}
+forecast_aapl$forecast_plot
+```
+
+As we simulated a portfolio in the past, let's do the same with it in the future:
+
+```{r}
+inves_df <- tibble(
+  symbol = c(  'RACE', 'AAPL', 'LOGN.SW'), 
+  investment = c(1000,   2000,     1500))
+forecast_p1 <- dt_port |> 
+  simulate_portfolio_future(inves_df)
+forecast_p1 |> names()
+```
+
+Now you can see one can see all the stocks combined or individually in the list. Let's have a look at our gains, for example:
+
+```{r}
+return = forecast_p1$gains |> pull(return) |> sum() |> round(2)
+investment = forecast_p1$gains |> pull(investment) |> sum() |> round(2)
+cli::cli_alert_info(paste(return - investment, "of predicted gains with portfolio 1"))
+```
+
+And then why not take a look at all forecasts:
+
+```{r}
+forecast_p1$portfolio_plot
+```
+
+References:
+
+`devtools::build_readme()`
